@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 
 	"github.com/segmentio/kafka-go"
@@ -71,7 +72,7 @@ func NewKafkaBroker(cfg *config.KafkaBrokerConfig, logger basic.Logger) (*KafkaB
 		Compression:            kafka.Gzip,
 		Logger:                 logger,
 		ErrorLogger:            logger,
-		AllowAutoTopicCreation: false,
+		AllowAutoTopicCreation: true,
 	}
 	return &KafkaBroker{
 		ctx:       context.Background(),
@@ -79,6 +80,7 @@ func NewKafkaBroker(cfg *config.KafkaBrokerConfig, logger basic.Logger) (*KafkaB
 		writer:    writer,
 		handlers:  make(map[string]*topicHandler),
 		logger:    logger,
+		connected: false,
 	}, nil
 }
 
@@ -96,6 +98,22 @@ func (b *KafkaBroker) Connect() error {
 	}
 	if err == nil {
 		b.connected = true
+		for topic, _ := range b.handlers {
+			var partitions []kafka.Partition
+			partitions, err = b.conn.ReadPartitions(topic)
+			fmt.Println(partitions)
+			if err == kafka.InvalidTopic {
+				b.logger.Warnf("topic %s doesn't exist, create it", topic)
+				// topic doesn't exist, create one
+				return b.conn.CreateTopics(kafka.TopicConfig{
+					Topic:             topic,
+					NumPartitions:     1,
+					ReplicationFactor: 3,
+				})
+			} else if err != nil {
+				b.logger.Errorf("read %s partition err:%s", topic, err.Error())
+			}
+		}
 	}
 	return err
 }
@@ -168,16 +186,6 @@ func (b *KafkaBroker) Subscribe(topic string, handler basic.EventHandler) error 
 		cgID:    cgID,
 		handler: handler,
 		sub:     sub,
-	}
-
-	_, err = b.conn.ReadPartitions(topic)
-	if err == kafka.InvalidTopic {
-		// topic doesn't exist, create one
-		return b.conn.CreateTopics(kafka.TopicConfig{
-			Topic:             topic,
-			NumPartitions:     1,
-			ReplicationFactor: 3,
-		})
 	}
 	return err
 }

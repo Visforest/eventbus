@@ -40,7 +40,7 @@ type Notifier struct {
 	logger      basic.Logger
 }
 
-func NewNotifier(cfg config.NotifierConfig, logger basic.Logger) (*Notifier, error) {
+func NewNotifier(cfg *config.NotifierConfig, logger basic.Logger) (*Notifier, error) {
 	var b broker.Broker
 	var err error
 	switch cfg.BrokerType {
