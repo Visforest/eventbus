@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/segmentio/kafka-go"
 	"github.com/visforest/eventbus/basic"
@@ -207,18 +208,27 @@ func (b *KafkaBroker) Subscribed() []string {
 	b.lock.RLock()
 	defer b.lock.RUnlock()
 	var topics = make([]string, 0, len(b.handlers))
-	for t, _ := range b.handlers {
+	for t := range b.handlers {
 		topics = append(topics, t)
 	}
 	return topics
 }
 
+// writes event msg to msg queue
 func (b *KafkaBroker) Write(e basic.Event) error {
 	b.logger.Debugf("[Broker] write msg with id %s to topic:%s", e.ID, e.Topic)
-	return b.writer.WriteMessages(context.Background(), kafka.Message{
+	if e.ExpireAt <= time.Now().Unix() {
+		b.logger.Warnf("event msg is expired before written, msg:%+v", e)
+		return nil
+	}
+	message := kafka.Message{
 		Topic: e.Topic,
 		Value: e.Marshal(),
-	})
+	}
+	if e.OrderKey != "" {
+		message.Key = []byte(e.OrderKey)
+	}
+	return b.writer.WriteMessages(context.Background(), message)
 }
 
 func (b *KafkaBroker) Consume() {
