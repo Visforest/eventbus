@@ -7,6 +7,6 @@ const (
 )
 
 type KafkaBrokerConfig struct {
-	Endpoints []string // kafka connect addresses
-	Prefix    string   // topic prefix
+	Endpoints       []string // kafka connect addresses
+	TopicPartitions int      // default number of new topic
 }

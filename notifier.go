@@ -1,6 +1,7 @@
 package eventbus
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -46,6 +47,7 @@ func WithOrderKey(key string) NotifyOpt {
 }
 
 type Notifier struct {
+	cfg         *config.NotifierConfig
 	idGenerator id.Generator
 	broker      broker.Broker
 	version     string
@@ -64,7 +66,7 @@ func NewNotifier(cfg *config.NotifierConfig, logger basic.Logger) (*Notifier, er
 	if err != nil {
 		return nil, err
 	}
-	return &Notifier{idGenerator: defaultIdGenerator, broker: b, logger: logger}, nil
+	return &Notifier{cfg: cfg, idGenerator: defaultIdGenerator, broker: b, logger: logger}, nil
 }
 
 func (n *Notifier) SetIdGenerator(generator id.Generator) {
@@ -79,14 +81,19 @@ func (n *Notifier) Notify(topic string, data any, opts ...NotifyOpt) error {
 	event := basic.Event{
 		ID:       n.idGenerator.New(),
 		CreateAt: time.Now().Unix(),
-		Topic:    topic,
+		Topic:    fmt.Sprintf("%s.%s", n.cfg.TopicPrefix, topic),
 		Payload:  payload,
 		Meta:     make(map[string]string),
 	}
 	for _, opt := range opts {
 		opt(&event)
 	}
-	event.Meta["User-Agent"] = fmt.Sprintf("eventbus:%s", Version)
+	event.Meta["User-Agent"] = fmt.Sprintf("eventbus_%s", Version)
 	n.logger.Debugf("[Notifier] ready to notify topic: %s with %+v", topic, event)
-	return n.broker.Write(event)
+	return n.broker.Write(context.Background(), event)
+}
+
+func (n *Notifier) Close() error {
+	n.logger.Infof("ready to close")
+	return n.broker.Disconnect()
 }
