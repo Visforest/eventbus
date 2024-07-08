@@ -10,7 +10,6 @@ import (
 	"github.com/segmentio/kafka-go"
 	"github.com/visforest/eventbus/basic"
 	"github.com/visforest/eventbus/config"
-	"github.com/visforest/eventbus/id"
 )
 
 type topicHandler struct {
@@ -149,7 +148,7 @@ func (b *KafkaBroker) Subscribe(topic string, handler basic.EventHandler) error 
 	defer b.lock.Unlock()
 
 	var err error
-	cgID := id.UUID{}.New()
+	cgID := basic.UUID{}.New()
 	cgCfg := kafka.ConsumerGroupConfig{
 		ID:                    cgID,
 		Brokers:               b.cfg.Endpoints,
@@ -338,7 +337,7 @@ func (h *cgHandler) run(ctx context.Context) {
 					h.logger.Errorf("[Consumer] failed to unmarshal event msg:%s, err:%+v", string(msg.Value), err)
 					continue
 				}
-				if err := h.handler(e); err != nil {
+				if err := h.handler.OnEvent(e); err != nil {
 					h.logger.Errorf("[Consumer] failed to handle event msg:%+v, err:%+v", e, err)
 				}
 				if err := h.generation.CommitOffsets(offsets); err != nil {
