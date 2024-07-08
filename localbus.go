@@ -1,7 +1,6 @@
 package eventbus
 
 import (
-	"encoding/json"
 	"fmt"
 	"github.com/visforest/eventbus/basic"
 	"github.com/visforest/goset/v2"
@@ -37,20 +36,21 @@ func (b *LocalBus) SetIdGenerator(generator basic.Generator) {
 	b.idGenerator = generator
 }
 
-func (b *LocalBus) Register(topic string, handler basic.EventHandler) error {
+func (b *LocalBus) Register(topic string, handlers ...basic.EventHandler) error {
 	b.m.Lock()
 	defer b.m.Unlock()
 
 	if s, ok := b.handlers[topic]; ok {
-		s.Add(handler)
-		if b.logger != nil {
-			b.logger.Debugf("registered handler '%s' on new topic:%s", handler.Name(), topic)
-		}
+		s.Add(handlers...)
 	} else {
-		b.handlers[topic] = goset.NewSet[basic.EventHandler](handler)
-		if b.logger != nil {
-			b.logger.Debugf("registered handler '%s' on topic:%s", handler.Name(), topic)
+		b.handlers[topic] = goset.NewSet[basic.EventHandler](handlers...)
+	}
+	if b.logger != nil {
+		var names = make([]string, len(handlers))
+		for _, h := range handlers {
+			names = append(names, h.Name())
 		}
+		b.logger.Debugf("registered handler %v on topic:%s", names, topic)
 	}
 	return nil
 }
@@ -84,15 +84,11 @@ func (b *LocalBus) Notify(topic string, data any, opts ...NotifyOpt) error {
 	if handlers.Length() == 0 {
 		return fmt.Errorf("no handlers registerd on topic:%s", topic)
 	}
-	payload, err := json.Marshal(data)
-	if err != nil {
-		return err
-	}
 	event := basic.Event{
 		ID:       b.idGenerator.New(),
 		CreateAt: time.Now().Unix(),
 		Topic:    topic,
-		Payload:  payload,
+		Payload:  data,
 		Meta:     make(map[string]string),
 	}
 	for _, opt := range opts {

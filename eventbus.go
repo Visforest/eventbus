@@ -56,7 +56,7 @@ func WithIdGenerator(generator basic.Generator) EventBusOpt {
 type Eventbus interface {
 	SetLogger(logger basic.Logger)
 	SetIdGenerator(generator basic.Generator)
-	Register(topic string, handler basic.EventHandler) error
+	Register(topic string, handlers ...basic.EventHandler) error
 	Unregister(topic string, handler basic.EventHandler) error
 	Registered() ([]string, error)
 	Notify(topic string, data any, opt ...NotifyOpt) error

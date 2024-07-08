@@ -11,12 +11,7 @@ type Event struct {
 	Topic    string            `json:"topic"`               // the topic that the event is associated with
 	OrderKey string            `json:"-"`
 	Meta     map[string]string `json:"meta"`    // optional meta data
-	Payload  []byte            `json:"payload"` // the encoded payload data
-}
-
-// Load parse the event payload into an object.
-func (e *Event) Load(v any) error {
-	return json.Unmarshal(e.Payload, v)
+	Payload  any               `json:"payload"` // the encoded payload data
 }
 
 func (e *Event) Marshal() []byte {
@@ -24,7 +19,7 @@ func (e *Event) Marshal() []byte {
 	return bytes
 }
 
-// EventHandler is the function that handles event, if returns non-nil error, event msg will be rollback
+// EventHandler is an object that handles event
 type EventHandler interface {
 	Name() string
 	OnEvent(event Event) error

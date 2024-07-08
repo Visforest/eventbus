@@ -23,12 +23,12 @@ type KafkaBus struct {
 	logger      basic.Logger
 }
 
-func NewKafkaBus(cfg *config.KafkaBrokerConfig, logger basic.Logger) (*KafkaBus, error) {
-	b, err := broker.NewKafkaBroker(cfg, logger)
+func NewKafkaBus(cfg *config.KafkaBrokerConfig) (*KafkaBus, error) {
+	b, err := broker.NewKafkaBroker(cfg, nil)
 	if err != nil {
 		return nil, err
 	}
-	return &KafkaBus{cfg: cfg, idGenerator: defaultIdGenerator, broker: b, logger: logger}, nil
+	return &KafkaBus{cfg: cfg, idGenerator: defaultIdGenerator, broker: b}, nil
 }
 
 func (b *KafkaBus) formatTopic(topic string) string {
@@ -46,20 +46,36 @@ func (b *KafkaBus) SetIdGenerator(generator basic.Generator) {
 	b.idGenerator = generator
 }
 
-func (b *KafkaBus) Register(topic string, handler basic.EventHandler) error {
+func (b *KafkaBus) Register(topic string, handlers ...basic.EventHandler) error {
 	b.m.Lock()
 	defer b.m.Unlock()
 
 	topic = b.formatTopic(topic)
-	return b.broker.Subscribe(topic, handler)
+	var err error
+	for _, handler := range handlers {
+		err = b.broker.Subscribe(topic, handler)
+		if err != nil {
+			return err
+		}
+		if b.logger != nil {
+			b.logger.Debugf("[eventbus] registered handler %s on %s", handler.Name(), topic)
+		}
+	}
+	return nil
 }
 
-func (b *KafkaBus) Unregister(topic string, _ basic.EventHandler) error {
+func (b *KafkaBus) Unregister(topic string, handler basic.EventHandler) error {
 	b.m.Lock()
 	defer b.m.Unlock()
 
 	topic = b.formatTopic(topic)
-	return b.broker.Unsubscribe(topic)
+	err := b.broker.Unsubscribe(topic, handler)
+	if err == nil {
+		if b.logger != nil {
+			b.logger.Debugf("[eventbus] unregistered handler %v on topic:%s", handler.Name(), topic)
+		}
+	}
+	return err
 }
 
 func (b *KafkaBus) Registered() ([]string, error) {
@@ -105,7 +121,9 @@ func (b *KafkaBus) Listen() {
 	cancel()
 	err := b.broker.Disconnect()
 	if err != nil {
-		b.logger.Errorf("[eventbus] failed to close, err:%s", err.Error())
+		if b.logger != nil {
+			b.logger.Errorf("[eventbus] failed to close, err:%s", err.Error())
+		}
 		return
 	}
 	if b.logger != nil {
