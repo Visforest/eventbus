@@ -17,6 +17,11 @@ func (l *InventoryLogic) Name() string {
 
 func (l *InventoryLogic) OnEvent(e basic.Event) error {
 	fmt.Printf("%s processed %s \n", l.Name(), e.ID)
+	if e.OriginalTopic == "order.create" {
+		fmt.Printf("%s got new order: %s \n", l.Name(), e.Payload.(string))
+	} else {
+		fmt.Printf("%s got canceled order: %s \n", l.Name(), e.Payload.(string))
+	}
 	return nil
 }
 
@@ -28,33 +33,39 @@ func (l *PurchaseLogic) Name() string {
 
 func (l *PurchaseLogic) OnEvent(e basic.Event) error {
 	fmt.Printf("%s processed %s \n", l.Name(), e.ID)
+	fmt.Printf("%s got new order: %s \n", l.Name(), e.Payload.(string))
+	if e.ExpireAt > 0 {
+		fmt.Printf("%s needs to handle before %s", l.Name(), time.Unix(e.ExpireAt, 0).String())
+	}
 	return nil
 }
 ```
 
 Local communication:
 ```go
-package main
-
-import (
-	"fmt"
-	"github.com/gin-gonic/gin"
-	"github.com/visforest/eventbus"
-	"github.com/visforest/eventbus/basic"
-	"log"
-)
-
 func main() {
 	bus := eventbus.NewLocalBus()
-	bus.Register("order", &InventoryLogic{},&PurchaseLogic{})
+	var err error
+	err = bus.Register("order.create", &InventoryLogic{}, &PurchaseLogic{})
+	if err != nil {
+		panic(err)
+	}
+	err = bus.Register("order.cancel", &InventoryLogic{})
+	if err != nil {
+		panic(err)
+	}
 
 	router := gin.Default()
 	router.POST("/order/create", func(context *gin.Context) {
 		// some business here
-		bus.Notify("order", "123456")
+		bus.Notify("order.create", "123456", eventbus.WithExpireDuration(24*time.Hour))
+	})
+	router.POST("/order/cancel", func(context *gin.Context) {
+		// some business here
+		bus.Notify("order.cancel", "123456")
 	})
 
-	err := router.Run(":8000")
+	err = router.Run(":8000")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -63,38 +74,47 @@ func main() {
 
 Cross-host communication:
 ```go
-package main
-
-import (
-	"fmt"
-	"github.com/gin-gonic/gin"
-	"github.com/visforest/eventbus"
-	"github.com/visforest/eventbus/basic"
-	"log"
-)
-
 func main() {
 	bus, err := eventbus.NewKafkaBus(&config.KafkaBrokerConfig{
-		Endpoints:       []string{"127.0.0.1:9092"},
+		Endpoints:       []string{"10.211.55.4:9092"},
 		TopicPartitions: 3,
 		TopicPrefix:     "mysass",
 	})
 	if err != nil {
 		panic(err)
 	}
-	if err=bus.Register("order", &InventoryLogic{}, &PurchaseLogic{});err!=nil{
+	err = bus.Register("order.create", &InventoryLogic{}, &PurchaseLogic{})
+	if err != nil {
 		panic(err)
-    }
+	}
+	err = bus.Register("order.cancel", &InventoryLogic{})
+	if err != nil {
+		panic(err)
+	}
 
 	router := gin.Default()
 	router.POST("/order/create", func(context *gin.Context) {
 		// some business here
-		bus.Notify("order", "123456")
+		bus.Notify("order.create", "123456", eventbus.WithExpireDuration(24*time.Hour))
+	})
+	router.POST("/order/cancel", func(context *gin.Context) {
+		// some business here
+		bus.Notify("order.cancel", "123456")
 	})
 
-	err = router.Run(":8000")
-	if err != nil {
-		log.Fatal(err)
-	}
+	go func() {
+		err = router.Run(":8000")
+		if err != nil {
+			log.Fatal(err)
+		}
+	}()
+
+	go func() {
+		bus.Listen()
+	}()
+
+	quit := make(chan os.Signal)
+	signal.Notify(quit, os.Interrupt, os.Kill)
+	<-quit
 }
 ```

@@ -4,13 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/visforest/goset/v2"
-	"sync"
-	"time"
-
 	"github.com/segmentio/kafka-go"
 	"github.com/visforest/eventbus/basic"
 	"github.com/visforest/eventbus/config"
+	"github.com/visforest/goset/v2"
+	"sync"
 )
 
 type topicHandler struct {
@@ -27,9 +25,9 @@ func (h *topicHandler) Next(ctx context.Context) *kafka.Generation {
 		return nil
 	} else {
 		// close consumer group
-		h.sub.lock.RLock()
+		h.sub.m.RLock()
 		closed := h.sub.closed
-		h.sub.lock.RUnlock()
+		h.sub.m.RUnlock()
 		if !closed {
 			if h.sub.logger != nil {
 				h.sub.logger.Infof("[eventbus] recreate consumer group, as unexpected consumer error %v", err)
@@ -56,15 +54,13 @@ type KafkaBroker struct {
 	connected   bool
 }
 
-func NewKafkaBroker(cfg *config.KafkaBrokerConfig, logger basic.Logger) (*KafkaBroker, error) {
+func NewKafkaBroker(cfg *config.KafkaBrokerConfig) (*KafkaBroker, error) {
 	writer := &kafka.Writer{
 		Addr:                   kafka.TCP(cfg.Endpoints...),
 		Balancer:               &kafka.LeastBytes{},
 		RequiredAcks:           kafka.RequireOne,
 		Async:                  false,
 		Compression:            kafka.Gzip,
-		Logger:                 logger,
-		ErrorLogger:            logger,
 		AllowAutoTopicCreation: true,
 	}
 	conn, err := kafka.Dial("tcp", cfg.Endpoints[0])
@@ -77,7 +73,6 @@ func NewKafkaBroker(cfg *config.KafkaBrokerConfig, logger basic.Logger) (*KafkaB
 		writer:      writer,
 		handlers:    make(map[string]*topicHandler),
 		wroteTopics: map[string]struct{}{},
-		logger:      logger,
 		connected:   false,
 		conn:        conn,
 	}, nil
@@ -87,7 +82,7 @@ func (b *KafkaBroker) createTopicIfNotExist(topic string) error {
 	_, err := b.conn.ReadPartitions(topic)
 	if err == kafka.UnknownTopicOrPartition {
 		if b.logger != nil {
-			b.logger.Warnf("[eventbus] topic %s doesn't exist, create it", topic)
+			b.logger.Warnf("[test broker] topic %s doesn't exist, create it", topic)
 		}
 		// topic doesn't exist, create one
 		err = b.conn.CreateTopics(kafka.TopicConfig{
@@ -97,10 +92,16 @@ func (b *KafkaBroker) createTopicIfNotExist(topic string) error {
 		})
 	} else if err != nil {
 		if b.logger != nil {
-			b.logger.Errorf("[eventbus] read %s partition err:%s", topic, err.Error())
+			b.logger.Errorf("[test broker] read %s partition err:%s", topic, err.Error())
 		}
 	}
 	return err
+}
+
+func (b *KafkaBroker) SetLogger(logger basic.Logger) {
+	b.logger = logger
+	b.writer.Logger = logger
+	b.writer.ErrorLogger = logger
 }
 
 func (b *KafkaBroker) Addrs() []string {
@@ -200,7 +201,7 @@ func (b *KafkaBroker) Unsubscribe(topic string, handler basic.EventHandler) erro
 	if h, ok := b.handlers[topic]; ok {
 		h.handlers.Delete(handler)
 		if b.logger != nil {
-			b.logger.Infof("[eventbus] unsubscribed handler %s on %s", handler.Name(), topic)
+			b.logger.Infof("[test broker] unsubscribed handler %s on %s", handler.Name(), topic)
 		}
 		if h.handlers.Length() == 0 {
 			if err := h.sub.cg.Close(); err != nil {
@@ -232,15 +233,9 @@ func (b *KafkaBroker) Write(ctx context.Context, e basic.Event) error {
 		b.wroteTopics[e.Topic] = struct{}{}
 	}
 	if b.logger != nil {
-		b.logger.Debugf("[eventbus] write msg with id %s to topic:%s", e.ID, e.Topic)
+		b.logger.Debugf("[test broker] write msg with id %s to topic:%s", e.ID, e.Topic)
 	}
 
-	if e.ExpireAt > 0 && e.ExpireAt <= time.Now().Unix() {
-		if b.logger != nil {
-			b.logger.Warnf("event msg is expired before written, msg:%+v", e)
-		}
-		return nil
-	}
 	message := kafka.Message{
 		Topic: e.Topic,
 		Value: e.Marshal(),
@@ -258,7 +253,7 @@ func (b *KafkaBroker) Consume(ctx context.Context) {
 				select {
 				case <-ctx.Done():
 					if b.logger != nil {
-						b.logger.Debugf("[eventbus] consume, ctx done, %s stop consume!", t)
+						b.logger.Debugf("[test broker] consume, ctx done, %s stop consume!", t)
 					}
 					return
 				default:
@@ -277,8 +272,13 @@ func (b *KafkaBroker) Consume(ctx context.Context) {
 								Logger:      b.logger,
 								ErrorLogger: b.logger,
 							}
-							cgh := newCgHandler(rCfg, generation, assignment.Offset, h.handlers, b.logger)
-							generation.Start(cgh.run)
+							if cgh, err := newCgHandler(rCfg, generation, assignment.Offset, h.handlers, b.logger); err == nil {
+								generation.Start(cgh.run)
+							} else {
+								if b.logger != nil {
+									b.logger.Errorf("[test broker] newCgHandler error:%s", err.Error())
+								}
+							}
 						}
 					}
 				}
@@ -292,7 +292,7 @@ type subscriber struct {
 	cgCfg  kafka.ConsumerGroupConfig
 	logger basic.Logger
 	closed bool
-	lock   sync.RWMutex
+	m      sync.RWMutex
 }
 
 func (s *subscriber) Close() error {
@@ -312,16 +312,16 @@ func (s *subscriber) newGroup(ctx context.Context) {
 			cg, err := kafka.NewConsumerGroup(s.cgCfg)
 			if err != nil {
 				if s.logger != nil {
-					s.logger.Errorf("[Subscriber] create consumer group failed:%+v", err)
+					s.logger.Errorf("[test subscriber] create consumer group failed:%+v", err)
 				}
 				continue
 			}
-			s.lock.Lock()
+			s.m.Lock()
 			s.cg = cg
 			if s.logger != nil {
-				s.logger.Infof("[Subscriber] recreated consumer group:%s", s.cgCfg.ID)
+				s.logger.Infof("[test subscriber] recreated consumer group:%s", s.cgCfg.ID)
 			}
-			s.lock.Unlock()
+			s.m.Unlock()
 			return
 		}
 	}
@@ -334,15 +334,17 @@ type cgHandler struct {
 	logger     basic.Logger
 }
 
-func newCgHandler(cfg kafka.ReaderConfig, generation *kafka.Generation, offset int64, handlers *goset.Set[basic.EventHandler], logger basic.Logger) *cgHandler {
+func newCgHandler(cfg kafka.ReaderConfig, generation *kafka.Generation, offset int64, handlers *goset.Set[basic.EventHandler], logger basic.Logger) (*cgHandler, error) {
 	reader := kafka.NewReader(cfg)
-	reader.SetOffset(offset)
+	if err := reader.SetOffset(offset); err != nil {
+		return nil, err
+	}
 	return &cgHandler{
 		generation: generation,
 		reader:     reader,
 		handlers:   handlers,
 		logger:     logger,
-	}
+	}, nil
 }
 
 func (h *cgHandler) run(ctx context.Context) {
@@ -364,31 +366,31 @@ func (h *cgHandler) run(ctx context.Context) {
 				var e basic.Event
 				if err := json.Unmarshal(msg.Value, &e); err != nil {
 					if h.logger != nil {
-						h.logger.Errorf("[eventbus] failed to unmarshal event msg:%s, err:%+v", string(msg.Value), err)
+						h.logger.Errorf("[test consumer group] failed to unmarshal event msg:%s, err:%+v", string(msg.Value), err)
 					}
 					continue
 				}
 				for _, hd := range h.handlers.ToList() {
 					if err := hd.OnEvent(e); err != nil {
 						if h.logger != nil {
-							h.logger.Errorf("[eventbus] failed to handle event msg:%+v, err:%+v", e, err)
+							h.logger.Errorf("[test consumer group] failed to handle event msg:%+v, err:%s", e, err.Error())
 						}
 					}
 				}
 				if err := h.generation.CommitOffsets(offsets); err != nil {
 					if h.logger != nil {
-						h.logger.Errorf("[eventbus] failed to commit offset, err:%+v", err)
+						h.logger.Errorf("[test consumer group] failed to commit offset, err:%+v", err)
 					}
 				}
 			} else if errors.Is(err, kafka.ErrGenerationEnded) {
 				if h.logger != nil {
-					h.logger.Debugf("[Consumer] generation ended")
+					h.logger.Infof("[test consumer group] generation ended")
 				}
 				return
 			} else {
 				// other error
 				if h.logger != nil {
-					h.logger.Errorf("[Consumer] failed to read event msg, unexpected err:%+v", err)
+					h.logger.Errorf("[test consumer group] failed to read event msg, unexpected err:%s", err.Error())
 				}
 			}
 		}

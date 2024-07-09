@@ -85,16 +85,23 @@ func (b *LocalBus) Notify(topic string, data any, opts ...NotifyOpt) error {
 		return fmt.Errorf("no handlers registerd on topic:%s", topic)
 	}
 	event := basic.Event{
-		ID:       b.idGenerator.New(),
-		CreateAt: time.Now().Unix(),
-		Topic:    topic,
-		Payload:  data,
-		Meta:     make(map[string]string),
+		ID:            b.idGenerator.New(),
+		CreateAt:      time.Now().Unix(),
+		Topic:         topic,
+		OriginalTopic: topic,
+		Payload:       data,
+		Meta:          make(map[string]string),
 	}
 	for _, opt := range opts {
 		opt(&event)
 	}
 	event.Meta["User-Agent"] = fmt.Sprintf("eventbus_%s.local", Version)
+	if event.ExpireAt > 0 && event.ExpireAt <= time.Now().Unix() {
+		if b.logger != nil {
+			b.logger.Warnf("[event] event msg is expired before written, msg:%+v", event)
+		}
+		return nil
+	}
 	for _, h := range handlers.ToList() {
 		go func(hd basic.EventHandler) {
 			if b.logger != nil {
@@ -110,4 +117,5 @@ func (b *LocalBus) Notify(topic string, data any, opts ...NotifyOpt) error {
 	return nil
 }
 
+// Listen is unavailable for localbus
 func (b *LocalBus) Listen() {}

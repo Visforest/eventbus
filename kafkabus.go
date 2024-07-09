@@ -2,7 +2,6 @@ package eventbus
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"github.com/visforest/eventbus/basic"
 	"github.com/visforest/eventbus/broker"
@@ -24,7 +23,7 @@ type KafkaBus struct {
 }
 
 func NewKafkaBus(cfg *config.KafkaBrokerConfig) (*KafkaBus, error) {
-	b, err := broker.NewKafkaBroker(cfg, nil)
+	b, err := broker.NewKafkaBroker(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -40,6 +39,7 @@ func (b *KafkaBus) formatTopic(topic string) string {
 
 func (b *KafkaBus) SetLogger(logger basic.Logger) {
 	b.logger = logger
+	b.broker.SetLogger(logger)
 }
 
 func (b *KafkaBus) SetIdGenerator(generator basic.Generator) {
@@ -84,23 +84,26 @@ func (b *KafkaBus) Registered() ([]string, error) {
 }
 
 func (b *KafkaBus) Notify(topic string, data any, opts ...NotifyOpt) error {
-	payload, err := json.Marshal(data)
-	if err != nil {
-		return err
-	}
 	event := basic.Event{
-		ID:       b.idGenerator.New(),
-		CreateAt: time.Now().Unix(),
-		Topic:    b.formatTopic(topic),
-		Payload:  payload,
-		Meta:     make(map[string]string),
+		ID:            b.idGenerator.New(),
+		CreateAt:      time.Now().Unix(),
+		Topic:         b.formatTopic(topic),
+		OriginalTopic: topic,
+		Payload:       data,
+		Meta:          make(map[string]string),
 	}
 	for _, opt := range opts {
 		opt(&event)
 	}
-	event.Meta["User-Agent"] = fmt.Sprintf("eventbus_%s.kafka", Version)
+	event.Meta["User-Agent"] = fmt.Sprintf("eventbus_%s.test", Version)
+	if event.ExpireAt > 0 && event.ExpireAt <= time.Now().Unix() {
+		if b.logger != nil {
+			b.logger.Warnf("[event] event msg is expired before written, msg:%+v", event)
+		}
+		return nil
+	}
 	if b.logger != nil {
-		b.logger.Debugf("[eventbus] ready to notify topic: %s with %+v", topic, event)
+		b.logger.Debugf("[eventbus] ready to notify event %+v on topic %s", event, topic)
 	}
 	return b.broker.Write(context.Background(), event)
 }
@@ -116,11 +119,10 @@ func (b *KafkaBus) Listen() {
 	signal.Notify(quit, os.Interrupt, os.Kill)
 	s := <-quit
 	if b.logger != nil {
-		b.logger.Errorf("[eventbus] quit, received signal %s", s.String())
+		b.logger.Errorf("[eventbus] listen quit, received signal %s", s.String())
 	}
 	cancel()
-	err := b.broker.Disconnect()
-	if err != nil {
+	if err := b.broker.Disconnect(); err != nil {
 		if b.logger != nil {
 			b.logger.Errorf("[eventbus] failed to close, err:%s", err.Error())
 		}
